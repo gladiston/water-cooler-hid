@@ -1,46 +1,73 @@
-import hid                              # Biblioteca para comunicação com dispositivos HID via USB
-from threading import Event, Thread     # Para agendar tarefas em segundo plano
-import psutil                           # Biblioteca para acessar informações do sistema, como temperatura da CPU
+#!/usr/bin/env python3
+# cpu_cooler.py
+#
+# Envia a temperatura atual da CPU para o display de um water cooler via USB HID
+#
+# Correção desta versão:
+# - hid.Device.write() (hidapi Python) espera bytes/bytearray, não list[int].
+#
+# Requisitos:
+#   pip install hidapi psutil
 
-# Função para obter a temperatura atual da CPU
+import hid
+import psutil
+from threading import Event, Thread
+
+# -----------------------------------------------------------------------------
+# Leitura da temperatura da CPU
+# -----------------------------------------------------------------------------
 def get_cpu_temp():
-    # 'k10temp' é o sensor usado por CPUs AMD; pode variar em outras arquiteturas
-    temp = psutil.sensors_temperatures()['k10temp'][0].current
-    return temp
+    temps = psutil.sensors_temperatures()
 
-# IDs do dispositivo HID (vendor e produto) — obtidos via lsusb
-VENDOR_ID = 0xaa88
+    if 'k10temp' in temps and temps['k10temp']:
+        return temps['k10temp'][0].current
+
+    for sensor_list in temps.values():
+        if sensor_list:
+            return sensor_list[0].current
+
+    raise RuntimeError('Nenhum sensor de temperatura encontrado')
+
+# -----------------------------------------------------------------------------
+# IDs do dispositivo HID
+# -----------------------------------------------------------------------------
+VENDOR_ID  = 0xaa88
 PRODUCT_ID = 0x8666
 
-# Inicializa o dispositivo HID
-device = hid.device()
-try:
-    device.open(VENDOR_ID, PRODUCT_ID)
-    print(f'✅ Conectado ao dispositivo HID (Vendor: {hex(VENDOR_ID)}, Product: {hex(PRODUCT_ID)})')
-except OSError as e:
-    print(f'❌ Falha ao abrir o dispositivo HID: {e}')
-    exit(1)
+# -----------------------------------------------------------------------------
+# Abre o device via path (mais robusto no Linux)
+# -----------------------------------------------------------------------------
+device = None
+for d in hid.enumerate(VENDOR_ID, PRODUCT_ID):
+    device = hid.Device(path=d['path'])
+    break
 
-# Função que envia a temperatura da CPU para o display do cooler
+if device is None:
+    print('❌ Dispositivo HID não encontrado')
+    raise SystemExit(1)
+
+print('✅ HID conectado via path')
+
+# -----------------------------------------------------------------------------
+# Envio da temperatura ao display
+# -----------------------------------------------------------------------------
 def write_to_cpu_fan_display(dev):
-    # Obtém a temperatura atual
-    fCpuTemp = get_cpu_temp()
-
-    # Cria um comando em bytes para enviar ao dispositivo
-    # O primeiro byte pode ser um identificador de comando (ex: 0), seguido pela temperatura
-    byte_command = [0, int(fCpuTemp)]
-
     try:
-        # Envia os dados para o dispositivo
-        num_bytes_written = dev.write(byte_command)
-        print(f'📤 Temperatura enviada: {fCpuTemp}°C')
-    except IOError as e:
-        print(f'⚠️ Erro ao escrever no dispositivo: {e}')
-        return None
+        cpu_temp = int(get_cpu_temp()) & 0xFF
 
-    return num_bytes_written
+        # Payload HID padrão (64 bytes)
+        payload = bytearray(64)
+        payload[0] = 0x00          # Report ID / comando (pode variar por modelo)
+        payload[1] = cpu_temp      # Temperatura em °C
 
-# Função que executa uma tarefa repetidamente em intervalos definidos
+        dev.write(bytes(payload))  # <-- importante: bytes/bytearray, não list
+        print(f'📤 Temperatura enviada: {cpu_temp}°C')
+    except Exception as e:
+        print(f'⚠️ Erro ao enviar dados: {e}')
+
+# -----------------------------------------------------------------------------
+# Execução periódica
+# -----------------------------------------------------------------------------
 def call_repeatedly(interval, func, *args):
     stopped = Event()
 
@@ -48,12 +75,27 @@ def call_repeatedly(interval, func, *args):
         while not stopped.wait(interval):
             func(*args)
 
-    # Inicia a thread em segundo plano
-    Thread(target=loop).start()
-    return stopped.set  # Retorna função para parar a execução futura
+    Thread(target=loop, daemon=True).start()
+    return stopped.set
 
-# Define o intervalo de atualização (em segundos)
-seconds = 1
+# -----------------------------------------------------------------------------
+# Configuração
+# -----------------------------------------------------------------------------
+INTERVAL_SECONDS = 1
 
-# Inicia o envio contínuo da temperatura para o cooler
-cancel_future_calls = call_repeatedly(seconds, write_to_cpu_fan_display, device)
+cancel_future_calls = call_repeatedly(
+    INTERVAL_SECONDS,
+    write_to_cpu_fan_display,
+    device
+)
+
+# -----------------------------------------------------------------------------
+# Loop principal
+# -----------------------------------------------------------------------------
+try:
+    while True:
+        Event().wait(10)
+except KeyboardInterrupt:
+    print('\n⏹️ Encerrando...')
+    cancel_future_calls()
+    device.close()

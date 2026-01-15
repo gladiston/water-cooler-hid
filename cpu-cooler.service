@@ -1,11 +1,15 @@
 [Unit]
-Description=CPU Cooler
+Description=CPU Cooler HID Display
+After=multi-user.target
+Requires=systemd-udev-settle.service
 
 [Service]
 Type=simple
+ExecStart=/usr/bin/python3 /home/suporte/Water-Cooler-Display-on-Linux/cpu_cooler_hid_path_bytes.py
+WorkingDirectory=/home/suporte/Water-Cooler-Display-on-Linux
 Restart=always
-RestartSec=1
-ExecStart=/usr/bin/env python3 %h/.local/bin/cpu_cooler.py
+RestartSec=2
+User=root
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target
