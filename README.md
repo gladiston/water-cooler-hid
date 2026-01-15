@@ -1,129 +1,116 @@
 # CPU Cooler Display para Linux
 
-Este projeto exibe **informações do sistema** (temperatura, uso de CPU ou RAM) no display de alguns **Water Coolers** que se comunicam via **USB HID** (normalmente com software apenas para Windows).
+Este projeto oferece uma solução para exibir **informações do sistema** em displays de Water Coolers no Linux, especialmente para dispositivos que possuem apenas software de controle para Windows.
 
-Foi testado com o **Water Cooler Rise Mode Aura Ice Black** (ID `aa88:8666`), e pode funcionar com outros modelos que usem um protocolo HID parecido.
+O script envia valores (temperatura, uso de CPU ou RAM) para o display via **USB HID**.  
+Foi testado com o **Water Cooler Rise Mode Aura Ice Black** (`aa88:8666`), mas pode funcionar com outros modelos que utilizem comunicação HID semelhante.
+
+---
 
 ## ✨ Funcionalidades
 
-- **Monitoramento em tempo real:** envia informações para o display (a cada 1 segundo).
-- **Múltiplos modos de exibição:** temperatura da CPU, uso de CPU (%) ou uso de RAM (%).
-- **Instalação automatizada:** scripts para instalar como **serviço do usuário** ou como **serviço do sistema**.
-- **Inicialização automática:** roda via `systemd` e inicia automaticamente.
-- **Detecção assistida:** os instaladores mostram `lsusb` (filtrando “Linux Foundation”) e sugerem o VID/PID (prioriza `aa88:8666`).
+- **Monitoramento em tempo real:** envio contínuo de dados ao display.
+- **Múltiplos modos de exibição:** temperatura da CPU, uso da CPU (%) ou uso da RAM (%).
+- **Instalação automatizada:** scripts para usuário ou sistema.
+- **Inicialização automática:** integração com `systemd`.
+- **Compatível com Linux:** não depende de software proprietário.
 
-## 📋 Pré-requisitos (Debian/Ubuntu)
+---
 
-Os instaladores já conferem e instalam as dependências abaixo antes de prosseguir:
+## ⚠️ Limitação Importante do Display (Leia antes)
+
+Alguns modelos de water cooler — incluindo o **Rise Mode Aura Ice Black** — possuem um **layout fixo gravado no firmware do display**.
+
+Isso significa que:
+
+- O script **envia apenas um valor numérico** (ex.: `37`)
+- O **texto exibido no display (“Temp/C”) não é controlado pelo script**
+- A **linha inferior é fixa** e definida pelo próprio hardware
+
+### O que isso implica na prática?
+
+Mesmo ao usar os modos:
+
+- `cpu` → uso da CPU (%)
+- `ram` → uso da memória (%)
+
+o display continuará mostrando algo como:
+
+```
+37
+Temp/C
+```
+
+Isso **não é um erro do script**.
+
+👉 O display **sempre assume que o número recebido é temperatura em °C**, pois este é o único modo oficialmente suportado pelo firmware.
+
+### Por que isso acontece?
+
+O protocolo HID utilizado:
+- **não aceita texto**
+- **não permite alterar unidades**
+- **não permite mudar o layout**
+- trabalha apenas com **bytes numéricos (0–255)**
+
+Todo o desenho do display (texto, unidade, posição) é feito internamente pelo dispositivo.
+
+### Conclusão
+
+> Ao usar os modos `cpu` ou `ram`, o valor exibido continua correto,  
+> **mas o texto “Temp/C” não corresponde mais ao significado real do número.**
+
+Essa limitação foi documentada aqui para evitar confusão ou falsas expectativas.
+
+---
+
+## 📋 Pré-requisitos
+
+Distribuições Debian/Ubuntu:
 
 ```bash
 sudo apt update
 sudo apt install python3-hid python3-psutil python3-pip python-is-python3
 ```
 
-> Observação: se você preferir usar `pip`, ok — mas aqui padronizamos os pacotes do sistema para evitar conflitos.
+---
 
 ## 🚀 Instalação
 
-### 1) Identifique o seu dispositivo (VID/PID)
+Recomenda-se utilizar os scripts automatizados.
 
-Conecte o cooler na USB e execute:
+### Identificar o dispositivo USB
 
 ```bash
 lsusb
 ```
 
-Exemplo (modelo testado):
+Exemplo do modelo testado:
 
 ```text
 Bus 001 Device 004: ID aa88:8666 铭研科技 温度显示HID设备
 ```
 
-Neste exemplo:
-- **VENDOR_ID** = `aa88`
-- **PRODUCT_ID** = `8666`
+- **VENDOR_ID:** `aa88`
+- **PRODUCT_ID:** `8666`
 
-### 2) Escolha o método de instalação
+Os scripts de instalação fazem essa detecção automaticamente.
 
-#### a) Instalação para Usuário (recomendado)
+---
 
-Instala o serviço para o seu usuário (via `systemd --user`).  
-O instalador vai pedir senha de `sudo` **apenas** para criar a regra `udev` (hidraw).
+## ⚙️ Modos de Exibição
 
-```bash
-chmod +x install-user.sh
-./install-user.sh
-```
+O script suporta três modos:
 
-O instalador:
-- mostra `lsusb` (sem “Linux Foundation”)
-- sugere VID/PID (prioriza `aa88:8666`)
-- cria `/etc/udev/rules.d/99-cpu-cooler-hid.rules`
-- cria o script em `~/.local/bin/cpu_cooler.py`
-- cria o serviço em `~/.config/systemd/user/cpu-cooler.service`
-- habilita e inicia o serviço
+| Modo | Informação enviada |
+|-----|-------------------|
+| `temp` | Temperatura da CPU (°C) |
+| `cpu`  | Uso da CPU (%) |
+| `ram`  | Uso da RAM (%) |
 
-**Para iniciar mesmo sem login (opcional):**
-```bash
-sudo loginctl enable-linger $USER
-```
+> ⚠️ Independentemente do modo, o texto do display continuará mostrando “Temp/C”.
 
-#### b) Instalação para o Sistema (system-wide)
-
-Instala o serviço para todos os usuários do sistema:
-
-```bash
-chmod +x install-system.sh
-sudo ./install-system.sh
-```
-
-O instalador:
-- mostra `lsusb` (sem “Linux Foundation”)
-- sugere VID/PID (prioriza `aa88:8666`)
-- cria `/etc/udev/rules.d/99-cpu-cooler-hid.rules`
-- cria o script em `/usr/local/bin/cpu-cooler.py`
-- cria o serviço em `/etc/systemd/system/cpu-cooler.service`
-- habilita e inicia o serviço
-
-## ✅ Uso e Verificação
-
-### Instalação de usuário
-
-Status:
-```bash
-systemctl --user status cpu-cooler.service
-```
-
-Logs em tempo real:
-```bash
-journalctl --user -u cpu-cooler.service -f
-```
-
-### Instalação de sistema
-
-Status:
-```bash
-systemctl status cpu-cooler.service
-```
-
-Logs em tempo real:
-```bash
-journalctl -u cpu-cooler.service -f
-```
-
-## 🔧 Configuração Avançada
-
-### Modos de exibição disponíveis
-
-O script suporta diferentes **modos de exibição**, definidos por parâmetro:
-
-| Modo | Descrição |
-|-----|----------|
-| `temp` | Temperatura da CPU (padrão) |
-| `cpu`  | Uso da CPU em porcentagem |
-| `ram`  | Uso da memória RAM em porcentagem |
-
-#### Exemplo de execução manual
+### Exemplo de execução manual
 
 ```bash
 python3 cpu_cooler.py --mode temp
@@ -131,99 +118,34 @@ python3 cpu_cooler.py --mode cpu
 python3 cpu_cooler.py --mode ram
 ```
 
-#### Exemplo configurando no systemd
+---
 
-Edite o serviço e altere o `ExecStart`:
+## 🔧 Personalização (Avançado)
 
-```ini
-ExecStart=/usr/bin/python3 /usr/local/bin/cpu-cooler.py --mode cpu
-```
-
-Depois recarregue:
-
-```bash
-systemctl daemon-reload
-systemctl restart cpu-cooler.service
-```
-
-### Fonte da temperatura da CPU
-
-O script tenta usar `k10temp` (comum em AMD).  
-Se não existir, ele usa o primeiro sensor disponível.
-
-Para listar os sensores disponíveis:
-
-```bash
-python3 -c "import psutil; print(psutil.sensors_temperatures())"
-```
-
-### Protocolo do display (payload HID)
-
-O envio usa um payload HID de **64 bytes**.  
-Atualmente são utilizados:
-
-```text
-payload[0] = 0x00   # comando / report id
-payload[1] = valor  # valor a ser exibido (0..255)
-```
-
-### Exemplos de personalização
-
-#### Enviar uso de CPU (%)
+Exemplo de envio de uso de CPU:
 
 ```python
 valor = int(psutil.cpu_percent(interval=0.2))
 payload[1] = valor & 0xFF
 ```
 
-#### Enviar uso de RAM (%)
+Exemplo de envio de uso de RAM:
 
 ```python
 valor = int(psutil.virtual_memory().percent)
 payload[1] = valor & 0xFF
 ```
 
-#### Ajustar temperatura com offset
-
-```python
-temp = int(get_cpu_temp())
-temp_corrigida = temp - 3
-payload[1] = max(0, min(255, temp_corrigida))
-```
-
-> Observação: se o display aceitar mais de um byte, é possível usar `payload[2]` para valores maiores.
+---
 
 ## 🗑️ Desinstalação
 
-### a) Remover instalação de usuário
+Os procedimentos de remoção permanecem os mesmos descritos nos scripts de instalação.
 
-```bash
-systemctl --user stop cpu-cooler.service
-systemctl --user disable cpu-cooler.service
-rm -f ~/.local/bin/cpu_cooler.py
-rm -f ~/.config/systemd/user/cpu-cooler.service
-systemctl --user daemon-reload
-sudo rm -f /etc/udev/rules.d/99-cpu-cooler-hid.rules
-sudo udevadm control --reload-rules && sudo udevadm trigger
-```
-
-### b) Remover instalação de sistema
-
-```bash
-sudo systemctl stop cpu-cooler.service
-sudo systemctl disable cpu-cooler.service
-sudo rm -f /usr/local/bin/cpu-cooler.py
-sudo rm -f /etc/systemd/system/cpu-cooler.service
-sudo systemctl daemon-reload
-sudo rm -f /etc/udev/rules.d/99-cpu-cooler-hid.rules
-sudo udevadm control --reload-rules && sudo udevadm trigger
-```
+---
 
 ## 🤔 Solução de Problemas
 
-- **Dispositivo não encontrado:** confirme VID/PID com `lsusb` e reconecte o USB após criar a regra `udev`.
-- **Permissão negada:** confirme a regra `hidraw`:
-  ```bash
-  cat /etc/udev/rules.d/99-cpu-cooler-hid.rules
-  ```
-- **Serviço não inicia:** consulte os logs na seção “Uso e Verificação”.
+- **Texto incorreto no display:** comportamento esperado; ver seção “Limitação Importante do Display”.
+- **Dispositivo não encontrado:** verifique VID/PID e a regra `udev`.
+- **Permissão negada:** confirme `/etc/udev/rules.d/99-cpu-cooler-hid.rules`.

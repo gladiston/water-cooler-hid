@@ -2,19 +2,8 @@
 # install-user.sh
 #
 # Instalador (modo usuário) para o "CPU Cooler HID Display"
-# - Verifica/instala dependências: python3-hid, python3-psutil, python3-pip, python-is-python3
-# - Mostra lsusb filtrado (remove Linux Foundation)
-# - Sugere VID/PID do cooler (prioriza ID aa88:8666)
-# - Cria regra udev para permitir acesso ao hidraw sem precisar rodar o serviço como root
-# - Instala o script Python em ~/.local/bin/cpu_cooler.py
-# - Instala o serviço systemd --user em ~/.config/systemd/user/cpu-cooler.service
-#
-# Uso:
-#   chmod +x install-user.sh
-#   ./install-user.sh
-#
-# Observação:
-#   Informe VID/PID em hexadecimal sem "0x" (ex: aa88 / 8666)
+# Inclui aviso claro quando o modo escolhido não for temperatura,
+# explicando que o texto "Temp/C" no display é fixo do hardware.
 
 set -e
 
@@ -22,6 +11,20 @@ need_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
     echo "❌ Comando obrigatório não encontrado: $1"
     exit 1
+  fi
+}
+
+pkg_installed() {
+  dpkg -s "$1" >/dev/null 2>&1
+}
+
+ensure_pkg() {
+  local pkg="$1"
+  if pkg_installed "$pkg"; then
+    echo "✔ Pacote já instalado: $pkg"
+  else
+    echo "📦 Instalando pacote ausente: $pkg"
+    sudo apt-get install -y "$pkg"
   fi
 }
 
@@ -33,22 +36,6 @@ extract_vidpid() {
   echo "$1" | sed -n 's/.*ID \([0-9a-fA-F]\{4\}:[0-9a-fA-F]\{4\}\).*/\1/p'
 }
 
-pkg_installed() {
-  dpkg -s "$1" >/dev/null 2>&1
-}
-
-ensure_pkg() {
-  local pkg="$1"
-  if pkg_installed "$pkg"; then
-    echo "✔ Pacote já instalado: $pkg"
-    return 0
-  fi
-
-  echo "📦 Pacote ausente: $pkg"
-  echo "   Vou tentar instalar usando sudo (pode pedir sua senha)."
-  sudo apt-get install -y "$pkg"
-}
-
 need_cmd lsusb
 need_cmd dpkg
 need_cmd apt-get
@@ -57,7 +44,6 @@ need_cmd python3
 
 echo "🔎 Verificando dependências Python..."
 
-# Atualiza índice só uma vez, se precisar instalar algo
 NEED_UPDATE=0
 for p in python3-hid python3-psutil python3-pip python-is-python3; do
   if ! pkg_installed "$p"; then
@@ -67,7 +53,6 @@ for p in python3-hid python3-psutil python3-pip python-is-python3; do
 done
 
 if [ "$NEED_UPDATE" -eq 1 ]; then
-  echo "📦 Algumas dependências estão ausentes. Atualizando lista de pacotes (apt-get update)..."
   sudo apt-get update -y
 fi
 
@@ -87,176 +72,91 @@ SUGGEST_VENDOR=""
 SUGGEST_PRODUCT=""
 MATCH_LINE=""
 
-# 1) Preferência absoluta: ID aa88:8666 (se existir)
 MATCH_LINE="$(echo "$LSUSB_OUTPUT" | grep -i 'ID aa88:8666' || true)"
 if [ -n "$MATCH_LINE" ]; then
   SUGGEST_VENDOR="aa88"
   SUGGEST_PRODUCT="8666"
-else
-  # 2) Fallback por palavras-chave (não depende do chinês)
-  MATCH_LINE="$(echo "$LSUSB_OUTPUT" | grep -iE 'HID|温度|temperature|temp|display' | head -n 1 || true)"
-  if [ -n "$MATCH_LINE" ]; then
-    VIDPID="$(extract_vidpid "$MATCH_LINE")"
-    if [ -n "$VIDPID" ]; then
-      SUGGEST_VENDOR="$(echo "$VIDPID" | cut -d: -f1 | tr '[:upper:]' '[:lower:]')"
-      SUGGEST_PRODUCT="$(echo "$VIDPID" | cut -d: -f2 | tr '[:upper:]' '[:lower:]')"
-    fi
-  fi
 fi
 
-if [ -n "$SUGGEST_VENDOR" ] && [ -n "$SUGGEST_PRODUCT" ]; then
+if [ -n "$SUGGEST_VENDOR" ]; then
   echo ""
   echo "⭐ Possível dispositivo do cooler encontrado:"
   echo "   $MATCH_LINE"
   echo ""
-  echo "➡️  Parâmetros sugeridos (cooler):"
-  echo "   VENDOR_ID (hex, sem 0x): $SUGGEST_VENDOR"
-  echo "   PRODUCT_ID (hex, sem 0x): $SUGGEST_PRODUCT"
-  echo ""
-else
-  echo ""
-  echo "ℹ️  Não consegui sugerir automaticamente o VID/PID do cooler."
-  echo "   Procure na lista acima a linha do seu dispositivo (ex: ID aa88:8666)."
-  echo ""
 fi
 
-# Permite ENTER para aceitar o sugerido
-read -p "Digite o VENDOR_ID do seu dispositivo (hex, sem 0x) [${SUGGEST_VENDOR}]: " VENDOR_ID
-read -p "Digite o PRODUCT_ID do seu dispositivo (hex, sem 0x) [${SUGGEST_PRODUCT}]: " PRODUCT_ID
+read -p "Digite o VENDOR_ID (hex, sem 0x) [${SUGGEST_VENDOR}]: " VENDOR_ID
+read -p "Digite o PRODUCT_ID (hex, sem 0x) [${SUGGEST_PRODUCT}]: " PRODUCT_ID
 
 VENDOR_ID="$(normalize_hex "${VENDOR_ID:-$SUGGEST_VENDOR}")"
 PRODUCT_ID="$(normalize_hex "${PRODUCT_ID:-$SUGGEST_PRODUCT}")"
 
 if ! [[ "$VENDOR_ID" =~ ^[0-9a-f]{4}$ ]] || ! [[ "$PRODUCT_ID" =~ ^[0-9a-f]{4}$ ]]; then
-  echo "❌ VENDOR_ID e PRODUCT_ID devem ter 4 dígitos hexadecimais (ex: aa88 / 8666)."
+  echo "❌ VENDOR_ID e PRODUCT_ID devem ter 4 dígitos hexadecimais."
   exit 1
+fi
+
+echo ""
+echo "📟 Escolha o modo de exibição do display:"
+echo "  1) Temperatura da CPU (temp) [padrão]"
+echo "  2) Uso da CPU em % (cpu)"
+echo "  3) Uso da RAM em % (ram)"
+echo ""
+
+read -p "Selecione uma opção [1-3] (ENTER = padrão): " MODE_OPT
+
+case "$MODE_OPT" in
+  2) DISPLAY_MODE="cpu" ;;
+  3) DISPLAY_MODE="ram" ;;
+  ""|1) DISPLAY_MODE="temp" ;;
+  *) echo "❌ Opção inválida."; exit 1 ;;
+esac
+
+echo "➡️  Modo selecionado: $DISPLAY_MODE"
+
+if [ "$DISPLAY_MODE" != "temp" ]; then
+  echo ""
+  echo "⚠️  ATENÇÃO:"
+  echo "   O texto exibido na linha inferior do cooler (ex: \"Temp/C\")"
+  echo "   é FIXO do hardware e NÃO pode ser alterado pelo script."
+  echo ""
+  echo "   O valor mostrado estará correto, mas o texto não refletirá"
+  echo "   o modo escolhido ($DISPLAY_MODE)."
+  echo ""
 fi
 
 echo ""
 echo "🔧 Criando regra udev para hidraw (exige sudo)..."
 UDEV_RULE_FILE="/etc/udev/rules.d/99-cpu-cooler-hid.rules"
-UDEV_RULE_CONTENT="SUBSYSTEM==\"hidraw\", ATTRS{idVendor}==\"$VENDOR_ID\", ATTRS{idProduct}==\"$PRODUCT_ID\", MODE=\"0666\""
-echo "$UDEV_RULE_CONTENT" | sudo tee "$UDEV_RULE_FILE" >/dev/null
+echo "SUBSYSTEM==\"hidraw\", ATTRS{idVendor}==\"$VENDOR_ID\", ATTRS{idProduct}==\"$PRODUCT_ID\", MODE=\"0666\"" | sudo tee "$UDEV_RULE_FILE" >/dev/null
 sudo udevadm control --reload-rules
 sudo udevadm trigger
 
 echo ""
-echo "📦 Instalando o script Python em ~/.local/bin/cpu_cooler.py ..."
+echo "📦 Instalando script Python..."
 mkdir -p "$HOME/.local/bin"
-cat > "$HOME/.local/bin/cpu_cooler.py" <<'PYEOF'
-#!/usr/bin/env python3
-# cpu_cooler.py
-#
-# Envia a temperatura atual da CPU para o display de um water cooler via USB HID.
-#
-# Requisitos:
-#   hidapi / psutil (via pacotes python3-hid e python3-psutil no Debian/Ubuntu)
-#
-# Notas:
-# - Abre o dispositivo via path (hid.enumerate), mais robusto no Linux
-# - dev.write() espera bytes/bytearray
-# - Payload de 64 bytes (comum em HID)
-
-import hid
-import psutil
-from threading import Event, Thread
-
-VENDOR_ID = 0xaa88
-PRODUCT_ID = 0x8666
-
-def get_cpu_temp() -> float:
-    temps = psutil.sensors_temperatures()
-
-    if "k10temp" in temps and temps["k10temp"]:
-        return temps["k10temp"][0].current
-
-    for sensor_list in temps.values():
-        if sensor_list:
-            return sensor_list[0].current
-
-    raise RuntimeError("Nenhum sensor de temperatura encontrado")
-
-def open_device(vid: int, pid: int) -> hid.Device:
-    for d in hid.enumerate(vid, pid):
-        return hid.Device(path=d["path"])
-    raise FileNotFoundError(f"Dispositivo HID não encontrado (vid={hex(vid)}, pid={hex(pid)})")
-
-def write_to_cpu_fan_display(dev: hid.Device) -> None:
-    try:
-        cpu_temp = int(get_cpu_temp()) & 0xFF
-
-        payload = bytearray(64)
-        payload[0] = 0x00
-        payload[1] = cpu_temp
-
-        dev.write(bytes(payload))
-        # Se quiser ver no console:
-        # print(f"📤 Temperatura enviada: {cpu_temp}°C")
-    except Exception as e:
-        print(f"⚠️ Erro ao enviar dados: {e}")
-
-def call_repeatedly(interval: float, func, *args):
-    stopped = Event()
-
-    def loop():
-        while not stopped.wait(interval):
-            func(*args)
-
-    Thread(target=loop, daemon=True).start()
-    return stopped.set
-
-def main() -> int:
-    try:
-        dev = open_device(VENDOR_ID, PRODUCT_ID)
-        print("✅ HID conectado via path")
-    except Exception as e:
-        print(f"❌ Erro ao abrir dispositivo HID: {e}")
-        return 1
-
-    cancel = call_repeatedly(1, write_to_cpu_fan_display, dev)
-
-    try:
-        while True:
-            Event().wait(10)
-    except KeyboardInterrupt:
-        print("\n⏹️ Encerrando...")
-        cancel()
-        dev.close()
-        return 0
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-PYEOF
+cp cpu_cooler.py "$HOME/.local/bin/cpu_cooler.py" 2>/dev/null || true
 chmod +x "$HOME/.local/bin/cpu_cooler.py"
 
 echo ""
-echo "🧩 Instalando o serviço systemd (usuário) ..."
+echo "🧩 Instalando serviço systemd (usuário)..."
 mkdir -p "$HOME/.config/systemd/user"
-cat > "$HOME/.config/systemd/user/cpu-cooler.service" <<'SVCEOF'
+cat > "$HOME/.config/systemd/user/cpu-cooler.service" <<EOF
 [Unit]
 Description=CPU Cooler HID Display (Usuario)
 After=default.target
 
 [Service]
-Type=simple
-ExecStart=/usr/bin/python3 %h/.local/bin/cpu_cooler.py
+ExecStart=/usr/bin/python3 %h/.local/bin/cpu_cooler.py --mode ${DISPLAY_MODE}
 Restart=always
-RestartSec=2
 
 [Install]
 WantedBy=default.target
-SVCEOF
+EOF
 
-echo ""
-echo "🔄 Recarregando systemd (usuário), habilitando e iniciando o serviço..."
 systemctl --user daemon-reload
 systemctl --user enable cpu-cooler.service
 systemctl --user restart cpu-cooler.service
 
 echo ""
-echo "✅ Instalação concluída (modo usuário)."
-echo "📌 Status:"
-echo "   systemctl --user status cpu-cooler.service"
-echo ""
-echo "Opcional (para iniciar mesmo sem login):"
-echo "   sudo loginctl enable-linger $USER"
+echo "✅ Instalação concluída."

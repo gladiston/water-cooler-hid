@@ -5,16 +5,15 @@
 # - Verifica/instala dependências: python3-hid, python3-psutil, python3-pip, python-is-python3
 # - Mostra lsusb filtrado (remove Linux Foundation)
 # - Sugere VID/PID do cooler (prioriza ID aa88:8666)
+# - Pergunta o modo de exibição (temp, cpu, ram) — padrão: temp
+# - Mostra aviso claro se o modo escolhido não for temperatura (texto fixo "Temp/C" no display)
 # - Cria regra udev para permitir acesso ao hidraw
 # - Instala o script Python em /usr/local/bin/cpu-cooler.py
-# - Instala o serviço systemd em /etc/systemd/system/cpu-cooler.service
+# - Instala o serviço systemd em /etc/systemd/system/cpu-cooler.service já com o modo escolhido
 #
 # Uso:
 #   chmod +x install-system.sh
 #   sudo ./install-system.sh
-#
-# Observação:
-#   Informe VID/PID em hexadecimal sem "0x" (ex: aa88 / 8666)
 
 set -e
 
@@ -53,6 +52,8 @@ need_cmd lsusb
 need_cmd apt-get
 need_cmd systemctl
 need_cmd udevadm
+need_cmd dpkg
+need_cmd python3
 
 echo "🔎 Verificando dependências Python..."
 apt-get update -y
@@ -60,8 +61,6 @@ ensure_pkg python3-hid
 ensure_pkg python3-psutil
 ensure_pkg python3-pip
 ensure_pkg python-is-python3
-
-need_cmd python3
 
 echo ""
 echo "🔍 Dispositivos USB detectados (lsusb filtrado):"
@@ -74,13 +73,11 @@ SUGGEST_VENDOR=""
 SUGGEST_PRODUCT=""
 MATCH_LINE=""
 
-# 1) Preferência absoluta: ID aa88:8666
 MATCH_LINE="$(echo "$LSUSB_OUTPUT" | grep -i 'ID aa88:8666' || true)"
 if [ -n "$MATCH_LINE" ]; then
   SUGGEST_VENDOR="aa88"
   SUGGEST_PRODUCT="8666"
 else
-  # 2) Fallback por palavras-chave
   MATCH_LINE="$(echo "$LSUSB_OUTPUT" | grep -iE 'HID|温度|temperature|temp|display' | head -n 1 || true)"
   if [ -n "$MATCH_LINE" ]; then
     VIDPID="$(extract_vidpid "$MATCH_LINE")"
@@ -96,9 +93,9 @@ if [ -n "$SUGGEST_VENDOR" ] && [ -n "$SUGGEST_PRODUCT" ]; then
   echo "⭐ Possível dispositivo do cooler encontrado:"
   echo "   $MATCH_LINE"
   echo ""
-  echo "➡️  Parâmetros sugeridos (cooler):"
-  echo "   Digite o VENDOR_ID (hex, sem 0x): $SUGGEST_VENDOR"
-  echo "   Digite o PRODUCT_ID (hex, sem 0x): $SUGGEST_PRODUCT"
+  echo "➡️  VID/PID sugeridos:"
+  echo "   VENDOR_ID : $SUGGEST_VENDOR"
+  echo "   PRODUCT_ID: $SUGGEST_PRODUCT"
   echo ""
 fi
 
@@ -114,11 +111,41 @@ if ! [[ "$VENDOR_ID" =~ ^[0-9a-f]{4}$ ]] || ! [[ "$PRODUCT_ID" =~ ^[0-9a-f]{4}$ 
 fi
 
 echo ""
+echo "📟 Escolha o modo de exibição do display:"
+echo "  1) Temperatura da CPU (temp) [padrão]"
+echo "  2) Uso da CPU em % (cpu)"
+echo "  3) Uso da RAM em % (ram)"
+echo ""
+read -p "Selecione uma opção [1-3] (ENTER = padrão): " MODE_OPT
+
+case "$MODE_OPT" in
+  2) DISPLAY_MODE="cpu" ;;
+  3) DISPLAY_MODE="ram" ;;
+  ""|1) DISPLAY_MODE="temp" ;;
+  *)
+     echo "❌ Opção inválida."
+     exit 1
+     ;;
+esac
+
+echo "➡️  Modo selecionado: $DISPLAY_MODE"
+
+if [ "$DISPLAY_MODE" != "temp" ]; then
+  echo ""
+  echo "⚠️  ATENÇÃO:"
+  echo "   A linha inferior do display do cooler (ex: \"Temp/C\")"
+  echo "   é um texto FIXO do hardware e NÃO pode ser alterado pelo script."
+  echo ""
+  echo "   O número exibido ficará correto, mas o texto abaixo continuará"
+  echo "   mostrando \"Temp/C\", mesmo no modo ${DISPLAY_MODE}."
+  echo ""
+fi
+
+echo ""
 echo "🔧 Criando regra udev para hidraw..."
 UDEV_RULE_FILE="/etc/udev/rules.d/99-cpu-cooler-hid.rules"
 UDEV_RULE_CONTENT="SUBSYSTEM==\"hidraw\", ATTRS{idVendor}==\"$VENDOR_ID\", ATTRS{idProduct}==\"$PRODUCT_ID\", MODE=\"0666\""
 echo "$UDEV_RULE_CONTENT" > "$UDEV_RULE_FILE"
-
 udevadm control --reload-rules
 udevadm trigger
 
@@ -128,6 +155,7 @@ cat > /usr/local/bin/cpu-cooler.py <<'PYEOF'
 #!/usr/bin/env python3
 import hid
 import psutil
+import argparse
 from threading import Event, Thread
 
 VENDOR_ID = 0xaa88
@@ -136,26 +164,37 @@ PRODUCT_ID = 0x8666
 def get_cpu_temp():
     temps = psutil.sensors_temperatures()
     if "k10temp" in temps and temps["k10temp"]:
-        return temps["k10temp"][0].current
+        return int(temps["k10temp"][0].current)
     for sensor_list in temps.values():
         if sensor_list:
-            return sensor_list[0].current
+            return int(sensor_list[0].current)
     raise RuntimeError("Nenhum sensor de temperatura encontrado")
+
+def get_cpu_percent():
+    return int(psutil.cpu_percent(interval=0.2))
+
+def get_ram_percent():
+    return int(psutil.virtual_memory().percent)
 
 def open_device(vid, pid):
     for d in hid.enumerate(vid, pid):
         return hid.Device(path=d["path"])
     raise FileNotFoundError("Dispositivo HID não encontrado")
 
-def write_to_cpu_fan_display(dev):
-    try:
-        cpu_temp = int(get_cpu_temp()) & 0xFF
-        payload = bytearray(64)
-        payload[0] = 0x00
-        payload[1] = cpu_temp
-        dev.write(bytes(payload))
-    except Exception as e:
-        print(f"Erro ao enviar dados: {e}")
+def build_payload(value):
+    payload = bytearray(64)
+    payload[0] = 0x00
+    payload[1] = value & 0xFF
+    return bytes(payload)
+
+def send_value(dev, mode):
+    if mode == "cpu":
+        value = get_cpu_percent()
+    elif mode == "ram":
+        value = get_ram_percent()
+    else:
+        value = get_cpu_temp()
+    dev.write(build_payload(value))
 
 def call_repeatedly(interval, func, *args):
     stopped = Event()
@@ -166,13 +205,17 @@ def call_repeatedly(interval, func, *args):
     return stopped.set
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", default="temp", choices=["temp","cpu","ram"])
+    args = parser.parse_args()
+
     dev = open_device(VENDOR_ID, PRODUCT_ID)
-    cancel = call_repeatedly(1, write_to_cpu_fan_display, dev)
+    call_repeatedly(1, send_value, dev, args.mode)
+
     try:
         while True:
             Event().wait(10)
     except KeyboardInterrupt:
-        cancel()
         dev.close()
 
 if __name__ == "__main__":
@@ -182,14 +225,14 @@ chmod 0755 /usr/local/bin/cpu-cooler.py
 
 echo ""
 echo "🧩 Instalando serviço systemd em /etc/systemd/system/cpu-cooler.service ..."
-cat > /etc/systemd/system/cpu-cooler.service <<'SVCEOF'
+cat > /etc/systemd/system/cpu-cooler.service <<SVCEOF
 [Unit]
 Description=CPU Cooler HID Display (System)
 After=multi-user.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /usr/local/bin/cpu-cooler.py
+ExecStart=/usr/bin/python3 /usr/local/bin/cpu-cooler.py --mode ${DISPLAY_MODE}
 Restart=always
 RestartSec=2
 
@@ -205,5 +248,8 @@ systemctl restart cpu-cooler.service
 
 echo ""
 echo "✅ Instalação concluída (modo sistema)."
+echo "📌 Modo configurado: ${DISPLAY_MODE}"
 echo "📌 Status:"
 echo "   systemctl status cpu-cooler.service"
+echo "📌 Logs em tempo real:"
+echo "   journalctl -u cpu-cooler.service -f"
