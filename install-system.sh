@@ -1,21 +1,20 @@
 #!/bin/bash
 # install-system.sh
 #
-# Instalador (modo sistema) para o "CPU Cooler HID Display"
-# - Verifica/instala dependências: python3-hid, python3-psutil, python3-pip, python-is-python3
-# - Mostra lsusb filtrado (remove Linux Foundation)
-# - Sugere VID/PID do cooler (prioriza ID aa88:8666)
-# - Pergunta o modo de exibição (temp, cpu, ram) — padrão: temp
-# - Mostra aviso claro se o modo escolhido não for temperatura (texto fixo "Temp/C" no display)
-# - Cria regra udev para permitir acesso ao hidraw
-# - Instala o script Python em /usr/local/bin/cpu-cooler.py
-# - Instala o serviço systemd em /etc/systemd/system/cpu-cooler.service já com o modo escolhido
+# Instalador / Desinstalador (modo sistema) para o "CPU Cooler HID Display"
 #
 # Uso:
-#   chmod +x install-system.sh
-#   sudo ./install-system.sh
+#   sudo ./install-system.sh            -> instala
+#   sudo ./install-system.sh --uninstall -> desinstala
+#
+# A desinstalação remove:
+#   - serviço systemd
+#   - script Python
+#   - regra udev
 
 set -e
+
+# ---------------- utilidades ----------------
 
 need_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -42,11 +41,48 @@ ensure_pkg() {
   fi
 }
 
-# Checa root
+# ---------------- checagem root ----------------
+
 if [ "$(id -u)" -ne 0 ]; then
-  echo "❌ Este script deve ser executado como root. Use: sudo ./install-system.sh"
+  echo "❌ Este script deve ser executado como root."
+  echo "   Use: sudo ./install-system.sh"
   exit 1
 fi
+
+# ---------------- modo uninstall ----------------
+
+if [ "$1" = "--uninstall" ]; then
+  echo "🗑️  Iniciando desinstalação do CPU Cooler HID Display (modo sistema)..."
+  echo ""
+
+  if systemctl list-unit-files | grep -q "^cpu-cooler.service"; then
+    echo "⏹️  Parando e removendo serviço systemd..."
+    systemctl stop cpu-cooler.service || true
+    systemctl disable cpu-cooler.service || true
+    rm -f /etc/systemd/system/cpu-cooler.service
+    systemctl daemon-reload
+  else
+    echo "ℹ️  Serviço systemd não encontrado."
+  fi
+
+  if [ -f /usr/local/bin/cpu-cooler.py ]; then
+    echo "🧹 Removendo script Python..."
+    rm -f /usr/local/bin/cpu-cooler.py
+  fi
+
+  if [ -f /etc/udev/rules.d/99-cpu-cooler-hid.rules ]; then
+    echo "🧹 Removendo regra udev..."
+    rm -f /etc/udev/rules.d/99-cpu-cooler-hid.rules
+    udevadm control --reload-rules
+    udevadm trigger
+  fi
+
+  echo ""
+  echo "✅ Desinstalação concluída."
+  exit 0
+fi
+
+# ---------------- instalação ----------------
 
 need_cmd lsusb
 need_cmd apt-get
@@ -106,7 +142,7 @@ VENDOR_ID="$(normalize_hex "${VENDOR_ID:-$SUGGEST_VENDOR}")"
 PRODUCT_ID="$(normalize_hex "${PRODUCT_ID:-$SUGGEST_PRODUCT}")"
 
 if ! [[ "$VENDOR_ID" =~ ^[0-9a-f]{4}$ ]] || ! [[ "$PRODUCT_ID" =~ ^[0-9a-f]{4}$ ]]; then
-  echo "❌ VENDOR_ID e PRODUCT_ID devem ter 4 dígitos hexadecimais (ex: aa88 / 8666)."
+  echo "❌ VENDOR_ID e PRODUCT_ID devem ter 4 dígitos hexadecimais."
   exit 1
 fi
 
@@ -122,10 +158,7 @@ case "$MODE_OPT" in
   2) DISPLAY_MODE="cpu" ;;
   3) DISPLAY_MODE="ram" ;;
   ""|1) DISPLAY_MODE="temp" ;;
-  *)
-     echo "❌ Opção inválida."
-     exit 1
-     ;;
+  *) echo "❌ Opção inválida."; exit 1 ;;
 esac
 
 echo "➡️  Modo selecionado: $DISPLAY_MODE"
@@ -134,18 +167,17 @@ if [ "$DISPLAY_MODE" != "temp" ]; then
   echo ""
   echo "⚠️  ATENÇÃO:"
   echo "   A linha inferior do display do cooler (ex: \"Temp/C\")"
-  echo "   é um texto FIXO do hardware e NÃO pode ser alterado pelo script."
+  echo "   é um texto FIXO do hardware e NÃO pode ser alterado."
   echo ""
-  echo "   O número exibido ficará correto, mas o texto abaixo continuará"
-  echo "   mostrando \"Temp/C\", mesmo no modo ${DISPLAY_MODE}."
+  echo "   O número exibido ficará correto, mas o texto abaixo"
+  echo "   continuará mostrando \"Temp/C\"."
   echo ""
 fi
 
 echo ""
 echo "🔧 Criando regra udev para hidraw..."
-UDEV_RULE_FILE="/etc/udev/rules.d/99-cpu-cooler-hid.rules"
-UDEV_RULE_CONTENT="SUBSYSTEM==\"hidraw\", ATTRS{idVendor}==\"$VENDOR_ID\", ATTRS{idProduct}==\"$PRODUCT_ID\", MODE=\"0666\""
-echo "$UDEV_RULE_CONTENT" > "$UDEV_RULE_FILE"
+echo "SUBSYSTEM==\"hidraw\", ATTRS{idVendor}==\"$VENDOR_ID\", ATTRS{idProduct}==\"$PRODUCT_ID\", MODE=\"0666\"" \
+  > /etc/udev/rules.d/99-cpu-cooler-hid.rules
 udevadm control --reload-rules
 udevadm trigger
 
@@ -249,7 +281,3 @@ systemctl restart cpu-cooler.service
 echo ""
 echo "✅ Instalação concluída (modo sistema)."
 echo "📌 Modo configurado: ${DISPLAY_MODE}"
-echo "📌 Status:"
-echo "   systemctl status cpu-cooler.service"
-echo "📌 Logs em tempo real:"
-echo "   journalctl -u cpu-cooler.service -f"

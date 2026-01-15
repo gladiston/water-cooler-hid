@@ -1,11 +1,20 @@
 #!/bin/bash
 # install-user.sh
 #
-# Instalador (modo usuário) para o "CPU Cooler HID Display"
-# Inclui aviso claro quando o modo escolhido não for temperatura,
-# explicando que o texto "Temp/C" no display é fixo do hardware.
+# Instalador / Desinstalador (modo usuário) para o "CPU Cooler HID Display"
+#
+# Uso:
+#   ./install-user.sh            -> instala
+#   ./install-user.sh --uninstall -> desinstala
+#
+# A desinstalação remove:
+#   - serviço systemd --user
+#   - script Python do usuário
+#   - NÃO remove a regra udev (compartilhada com instalação system-wide)
 
 set -e
+
+# ---------------- utilidades ----------------
 
 need_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -32,9 +41,35 @@ normalize_hex() {
   echo "$1" | sed 's/^0[xX]//' | tr '[:upper:]' '[:lower:]'
 }
 
-extract_vidpid() {
-  echo "$1" | sed -n 's/.*ID \([0-9a-fA-F]\{4\}:[0-9a-fA-F]\{4\}\).*/\1/p'
-}
+# ---------------- modo uninstall ----------------
+
+if [ "$1" = "--uninstall" ]; then
+  echo "🗑️  Iniciando desinstalação (modo usuário)..."
+  echo ""
+
+  if systemctl --user list-unit-files | grep -q "^cpu-cooler.service"; then
+    echo "⏹️  Parando e removendo serviço systemd --user..."
+    systemctl --user stop cpu-cooler.service || true
+    systemctl --user disable cpu-cooler.service || true
+    rm -f "$HOME/.config/systemd/user/cpu-cooler.service"
+    systemctl --user daemon-reload
+  else
+    echo "ℹ️  Serviço systemd --user não encontrado."
+  fi
+
+  if [ -f "$HOME/.local/bin/cpu_cooler.py" ]; then
+    echo "🧹 Removendo script Python do usuário..."
+    rm -f "$HOME/.local/bin/cpu_cooler.py"
+  fi
+
+  echo ""
+  echo "✅ Desinstalação concluída (modo usuário)."
+  echo "ℹ️  Observação: a regra udev NÃO foi removida."
+  echo "   Caso deseje removê-la, use o install-system.sh --uninstall."
+  exit 0
+fi
+
+# ---------------- checagens iniciais ----------------
 
 need_cmd lsusb
 need_cmd dpkg
@@ -64,37 +99,14 @@ ensure_pkg python-is-python3
 echo ""
 echo "🔍 Dispositivos USB detectados (lsusb filtrado):"
 echo "------------------------------------------------"
-LSUSB_OUTPUT="$(lsusb | grep -v 'Linux Foundation' || true)"
-echo "$LSUSB_OUTPUT"
+lsusb | grep -v 'Linux Foundation' || true
 echo "------------------------------------------------"
 
-SUGGEST_VENDOR=""
-SUGGEST_PRODUCT=""
-MATCH_LINE=""
+read -p "Digite o VENDOR_ID (hex, sem 0x) [aa88]: " VENDOR_ID
+read -p "Digite o PRODUCT_ID (hex, sem 0x) [8666]: " PRODUCT_ID
 
-MATCH_LINE="$(echo "$LSUSB_OUTPUT" | grep -i 'ID aa88:8666' || true)"
-if [ -n "$MATCH_LINE" ]; then
-  SUGGEST_VENDOR="aa88"
-  SUGGEST_PRODUCT="8666"
-fi
-
-if [ -n "$SUGGEST_VENDOR" ]; then
-  echo ""
-  echo "⭐ Possível dispositivo do cooler encontrado:"
-  echo "   $MATCH_LINE"
-  echo ""
-fi
-
-read -p "Digite o VENDOR_ID (hex, sem 0x) [${SUGGEST_VENDOR}]: " VENDOR_ID
-read -p "Digite o PRODUCT_ID (hex, sem 0x) [${SUGGEST_PRODUCT}]: " PRODUCT_ID
-
-VENDOR_ID="$(normalize_hex "${VENDOR_ID:-$SUGGEST_VENDOR}")"
-PRODUCT_ID="$(normalize_hex "${PRODUCT_ID:-$SUGGEST_PRODUCT}")"
-
-if ! [[ "$VENDOR_ID" =~ ^[0-9a-f]{4}$ ]] || ! [[ "$PRODUCT_ID" =~ ^[0-9a-f]{4}$ ]]; then
-  echo "❌ VENDOR_ID e PRODUCT_ID devem ter 4 dígitos hexadecimais."
-  exit 1
-fi
+VENDOR_ID="$(normalize_hex "${VENDOR_ID:-aa88}")"
+PRODUCT_ID="$(normalize_hex "${PRODUCT_ID:-8666}")"
 
 echo ""
 echo "📟 Escolha o modo de exibição do display:"
@@ -102,7 +114,6 @@ echo "  1) Temperatura da CPU (temp) [padrão]"
 echo "  2) Uso da CPU em % (cpu)"
 echo "  3) Uso da RAM em % (ram)"
 echo ""
-
 read -p "Selecione uma opção [1-3] (ENTER = padrão): " MODE_OPT
 
 case "$MODE_OPT" in
@@ -118,28 +129,18 @@ if [ "$DISPLAY_MODE" != "temp" ]; then
   echo ""
   echo "⚠️  ATENÇÃO:"
   echo "   O texto exibido na linha inferior do cooler (ex: \"Temp/C\")"
-  echo "   é FIXO do hardware e NÃO pode ser alterado pelo script."
-  echo ""
-  echo "   O valor mostrado estará correto, mas o texto não refletirá"
-  echo "   o modo escolhido ($DISPLAY_MODE)."
+  echo "   é FIXO do hardware e NÃO pode ser alterado."
   echo ""
 fi
 
 echo ""
-echo "🔧 Criando regra udev para hidraw (exige sudo)..."
-UDEV_RULE_FILE="/etc/udev/rules.d/99-cpu-cooler-hid.rules"
-echo "SUBSYSTEM==\"hidraw\", ATTRS{idVendor}==\"$VENDOR_ID\", ATTRS{idProduct}==\"$PRODUCT_ID\", MODE=\"0666\"" | sudo tee "$UDEV_RULE_FILE" >/dev/null
-sudo udevadm control --reload-rules
-sudo udevadm trigger
-
-echo ""
-echo "📦 Instalando script Python..."
+echo "📦 Instalando script Python do usuário..."
 mkdir -p "$HOME/.local/bin"
 cp cpu_cooler.py "$HOME/.local/bin/cpu_cooler.py" 2>/dev/null || true
 chmod +x "$HOME/.local/bin/cpu_cooler.py"
 
 echo ""
-echo "🧩 Instalando serviço systemd (usuário)..."
+echo "🧩 Instalando serviço systemd --user..."
 mkdir -p "$HOME/.config/systemd/user"
 cat > "$HOME/.config/systemd/user/cpu-cooler.service" <<EOF
 [Unit]
@@ -159,4 +160,4 @@ systemctl --user enable cpu-cooler.service
 systemctl --user restart cpu-cooler.service
 
 echo ""
-echo "✅ Instalação concluída."
+echo "✅ Instalação concluída (modo usuário)."
