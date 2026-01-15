@@ -163,72 +163,49 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 
 ---
 
-## 🗑️ Remoção / Desinstalação
+## 🆕 Atualizações Importantes (compatibilidade e modos)
 
-Você pode remover o projeto de duas formas:
+### Compatibilidade com diferentes versões do `hid`
+O script `cpu_cooler.py` foi atualizado para funcionar com **ambas** as APIs encontradas no Linux:
+- `hid.Device(...)`
+- `hid.device()` + `open_path(...)`
 
-### 1) Remoção automatizada (recomendada)
-
-#### a) Instalação no sistema (system-wide)
-
-Use o próprio instalador com `--uninstall`:
-
-```bash
-sudo ./install-system.sh --uninstall
+Isso evita erros como:
 ```
-
-Esse comando remove:
-- Serviço: `/etc/systemd/system/cpu-cooler.service`
-- Script: `/usr/local/bin/cpu-cooler.py`
-- Regra udev: `/etc/udev/rules.d/99-cpu-cooler-hid.rules`
-- Recarrega `systemd` e `udev`
-
-#### b) Instalação no usuário
-
-Use o instalador do usuário com `--uninstall`:
-
-```bash
-./install-user.sh --uninstall
+AttributeError: module 'hid' has no attribute 'Device'
 ```
+e garante funcionamento tanto com pacotes mais antigos quanto mais novos.
 
-Esse comando remove:
-- Serviço do usuário: `~/.config/systemd/user/cpu-cooler.service`
-- Script do usuário: `~/.local/bin/cpu_cooler.py`
-- Recarrega `systemd --user`
+### Comportamento resiliente (systemd)
+O script **não encerra** se o dispositivo HID ainda não estiver disponível no boot ou após reconexão USB.
+Ele tenta reconectar automaticamente, mantendo o serviço ativo no `systemd`.
 
-> Observação: no modo usuário, a **regra udev não é removida** (ela pode estar sendo usada por outra instalação/usuário).  
-> Para remover também a regra udev, use o `install-system.sh --uninstall`.
+### Modos de exibição
+Agora é possível escolher o que será exibido no display:
+- `temp` — Temperatura da CPU (padrão)
+- `cpu` — Uso da CPU em %
+- `ram` — Uso da memória RAM em %
 
-### 2) Remoção manual (referência)
+> ⚠️ **Aviso importante sobre o display**  
+> A **linha inferior do display** (ex.: `"Temp/C"`) é **FIXA do hardware** e **não pode ser alterada** pelo script.  
+> Ao usar os modos `cpu` ou `ram`, o **valor numérico estará correto**, mas o texto inferior continuará exibindo `"Temp/C"`.
 
-Use este modo se você preferir remover “na mão” ou se não tiver mais os scripts de instalação.
+### Desinstalação automatizada
+Os scripts agora aceitam o parâmetro `--uninstall`:
 
-#### a) Remoção manual (usuário)
+- **Modo usuário**
+  ```bash
+  ./install-user.sh --uninstall
+  ```
 
-```bash
-systemctl --user stop cpu-cooler.service
-systemctl --user disable cpu-cooler.service
-rm -f ~/.local/bin/cpu_cooler.py
-rm -f ~/.config/systemd/user/cpu-cooler.service
-systemctl --user daemon-reload
-```
+- **Modo sistema**
+  ```bash
+  sudo ./install-system.sh --uninstall
+  ```
 
-#### b) Remoção manual (sistema)
+Esses comandos removem serviços, scripts e (no modo sistema) a regra `udev`.
 
-```bash
-sudo systemctl stop cpu-cooler.service
-sudo systemctl disable cpu-cooler.service
-sudo rm -f /usr/local/bin/cpu-cooler.py
-sudo rm -f /etc/systemd/system/cpu-cooler.service
-sudo systemctl daemon-reload
-```
-
-#### c) Remover a regra udev (se necessário)
-
-Se você **não** usa mais o dispositivo (ou não quer mais liberar o acesso ao `hidraw`), remova a regra:
-
-```bash
-sudo rm -f /etc/udev/rules.d/99-cpu-cooler-hid.rules
-sudo udevadm control --reload-rules && sudo udevadm trigger
-```
-
+### Observações importantes
+- `install-user.sh` **não deve ser executado com sudo**.  
+  Ele aborta se for executado como root para evitar problemas com `systemd --user`.
+- `install-system.sh` **deve ser executado com sudo**.

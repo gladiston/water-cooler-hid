@@ -1,20 +1,13 @@
 #!/bin/bash
 # install-system.sh
 #
-# Instalador / Desinstalador (modo sistema) para o "CPU Cooler HID Display"
-#
 # Uso:
-#   sudo ./install-system.sh            -> instala
-#   sudo ./install-system.sh --uninstall -> desinstala
+#   sudo ./install-system.sh              -> instala
+#   sudo ./install-system.sh --uninstall  -> desinstala
 #
-# A desinstalação remove:
-#   - serviço systemd
-#   - script Python
-#   - regra udev
+# Esta versão instala um cpu-cooler.py compatível com hid.Device OU hid.device().
 
 set -e
-
-# ---------------- utilidades ----------------
 
 need_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -41,48 +34,30 @@ ensure_pkg() {
   fi
 }
 
-# ---------------- checagem root ----------------
-
 if [ "$(id -u)" -ne 0 ]; then
   echo "❌ Este script deve ser executado como root."
   echo "   Use: sudo ./install-system.sh"
   exit 1
 fi
 
-# ---------------- modo uninstall ----------------
-
 if [ "$1" = "--uninstall" ]; then
-  echo "🗑️  Iniciando desinstalação do CPU Cooler HID Display (modo sistema)..."
-  echo ""
+  echo "🗑️  Iniciando desinstalação (modo sistema)..."
+  systemctl stop cpu-cooler.service 2>/dev/null || true
+  systemctl disable cpu-cooler.service 2>/dev/null || true
+  rm -f /etc/systemd/system/cpu-cooler.service
+  systemctl daemon-reload
 
-  if systemctl list-unit-files | grep -q "^cpu-cooler.service"; then
-    echo "⏹️  Parando e removendo serviço systemd..."
-    systemctl stop cpu-cooler.service || true
-    systemctl disable cpu-cooler.service || true
-    rm -f /etc/systemd/system/cpu-cooler.service
-    systemctl daemon-reload
-  else
-    echo "ℹ️  Serviço systemd não encontrado."
-  fi
-
-  if [ -f /usr/local/bin/cpu-cooler.py ]; then
-    echo "🧹 Removendo script Python..."
-    rm -f /usr/local/bin/cpu-cooler.py
-  fi
+  rm -f /usr/local/bin/cpu-cooler.py
 
   if [ -f /etc/udev/rules.d/99-cpu-cooler-hid.rules ]; then
-    echo "🧹 Removendo regra udev..."
     rm -f /etc/udev/rules.d/99-cpu-cooler-hid.rules
     udevadm control --reload-rules
     udevadm trigger
   fi
 
-  echo ""
   echo "✅ Desinstalação concluída."
   exit 0
 fi
-
-# ---------------- instalação ----------------
 
 need_cmd lsusb
 need_cmd apt-get
@@ -138,11 +113,11 @@ fi
 read -p "Digite o VENDOR_ID do seu dispositivo (hex, sem 0x) [${SUGGEST_VENDOR}]: " VENDOR_ID
 read -p "Digite o PRODUCT_ID do seu dispositivo (hex, sem 0x) [${SUGGEST_PRODUCT}]: " PRODUCT_ID
 
-VENDOR_ID="$(normalize_hex "${VENDOR_ID:-$SUGGEST_VENDOR}")"
-PRODUCT_ID="$(normalize_hex "${PRODUCT_ID:-$SUGGEST_PRODUCT}")"
+VENDOR_ID="$(normalize_hex "${VENDOR_ID:-${SUGGEST_VENDOR}}")"
+PRODUCT_ID="$(normalize_hex "${PRODUCT_ID:-${SUGGEST_PRODUCT}}")"
 
 if ! [[ "$VENDOR_ID" =~ ^[0-9a-f]{4}$ ]] || ! [[ "$PRODUCT_ID" =~ ^[0-9a-f]{4}$ ]]; then
-  echo "❌ VENDOR_ID e PRODUCT_ID devem ter 4 dígitos hexadecimais."
+  echo "❌ VENDOR_ID e PRODUCT_ID devem ter 4 dígitos hexadecimais (ex: aa88 / 8666)."
   exit 1
 fi
 
@@ -166,92 +141,132 @@ echo "➡️  Modo selecionado: $DISPLAY_MODE"
 if [ "$DISPLAY_MODE" != "temp" ]; then
   echo ""
   echo "⚠️  ATENÇÃO:"
-  echo "   A linha inferior do display do cooler (ex: \"Temp/C\")"
-  echo "   é um texto FIXO do hardware e NÃO pode ser alterado."
-  echo ""
-  echo "   O número exibido ficará correto, mas o texto abaixo"
-  echo "   continuará mostrando \"Temp/C\"."
+  echo "   A linha inferior do display do cooler (ex: \"Temp/C\") é FIXA do hardware"
+  echo "   e NÃO pode ser alterada pelo script."
   echo ""
 fi
 
 echo ""
 echo "🔧 Criando regra udev para hidraw..."
-echo "SUBSYSTEM==\"hidraw\", ATTRS{idVendor}==\"$VENDOR_ID\", ATTRS{idProduct}==\"$PRODUCT_ID\", MODE=\"0666\"" \
-  > /etc/udev/rules.d/99-cpu-cooler-hid.rules
+echo "SUBSYSTEM==\"hidraw\", ATTRS{idVendor}==\"$VENDOR_ID\", ATTRS{idProduct}==\"$PRODUCT_ID\", MODE=\"0666\""   > /etc/udev/rules.d/99-cpu-cooler-hid.rules
 udevadm control --reload-rules
 udevadm trigger
 
 echo ""
-echo "📦 Instalando script Python em /usr/local/bin/cpu-cooler.py ..."
+echo "📦 Instalando cpu-cooler.py compatível em /usr/local/bin/cpu-cooler.py ..."
 cat > /usr/local/bin/cpu-cooler.py <<'PYEOF'
 #!/usr/bin/env python3
+import argparse
+import sys
+import time
 import hid
 import psutil
-import argparse
-from threading import Event, Thread
 
-VENDOR_ID = 0xaa88
-PRODUCT_ID = 0x8666
+# Observacao:
+# Este display aceita apenas um valor numerico (0-255). O texto/rotulo (ex: "Temp/C") e fixo do hardware.
 
-def get_cpu_temp():
-    temps = psutil.sensors_temperatures()
-    if "k10temp" in temps and temps["k10temp"]:
-        return int(temps["k10temp"][0].current)
+def get_cpu_temp() -> int:
+    temps = psutil.sensors_temperatures() or {}
+    for key in ("k10temp", "coretemp"):
+        if key in temps and temps[key]:
+            return int(temps[key][0].current)
     for sensor_list in temps.values():
         if sensor_list:
             return int(sensor_list[0].current)
-    raise RuntimeError("Nenhum sensor de temperatura encontrado")
+    raise RuntimeError("Nenhum sensor de temperatura encontrado via psutil.sensors_temperatures()")
 
-def get_cpu_percent():
+def get_cpu_percent() -> int:
     return int(psutil.cpu_percent(interval=0.2))
 
-def get_ram_percent():
+def get_ram_percent() -> int:
     return int(psutil.virtual_memory().percent)
 
-def open_device(vid, pid):
-    for d in hid.enumerate(vid, pid):
-        return hid.Device(path=d["path"])
-    raise FileNotFoundError("Dispositivo HID não encontrado")
-
-def build_payload(value):
+def build_payload(value: int) -> bytes:
     payload = bytearray(64)
     payload[0] = 0x00
     payload[1] = value & 0xFF
     return bytes(payload)
 
-def send_value(dev, mode):
-    if mode == "cpu":
-        value = get_cpu_percent()
-    elif mode == "ram":
-        value = get_ram_percent()
-    else:
-        value = get_cpu_temp()
-    dev.write(build_payload(value))
+def open_device(vid: int, pid: int):
+    # Compatibilidade com diferentes wrappers do 'hid':
+    # - Alguns expõem hid.Device(path=...)
+    # - Outros expõem hid.device() + open_path(...)
+    devs = hid.enumerate(vid, pid) or []
+    if not devs:
+        raise FileNotFoundError(f"Nenhum dispositivo HID encontrado para VID:PID {vid:04x}:{pid:04x}")
 
-def call_repeatedly(interval, func, *args):
-    stopped = Event()
-    def loop():
-        while not stopped.wait(interval):
-            func(*args)
-    Thread(target=loop, daemon=True).start()
-    return stopped.set
+    path = devs[0].get("path")
+    if not path:
+        raise RuntimeError("Dispositivo encontrado, mas sem 'path' no enumerate()")
+
+    # 1) API "nova": hid.Device
+    if hasattr(hid, "Device"):
+        return hid.Device(path=path)
+
+    # 2) API "antiga": hid.device()
+    if hasattr(hid, "device"):
+        d = hid.device()
+        d.open_path(path)
+        return d
+
+    raise AttributeError("Modulo 'hid' nao expoe Device nem device(). Verifique o pacote instalado.")
+
+def log(msg: str):
+    print(msg, file=sys.stderr, flush=True)
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", default="temp", choices=["temp","cpu","ram"])
+    parser.add_argument("--vid", default="aa88", help="VENDOR_ID em hex (sem 0x). Ex: aa88")
+    parser.add_argument("--pid", default="8666", help="PRODUCT_ID em hex (sem 0x). Ex: 8666")
+    parser.add_argument("--mode", default="temp", choices=["temp", "cpu", "ram"])
+    parser.add_argument("--interval", type=float, default=1.0, help="Intervalo em segundos (padrao: 1.0)")
     args = parser.parse_args()
 
-    dev = open_device(VENDOR_ID, PRODUCT_ID)
-    call_repeatedly(1, send_value, dev, args.mode)
+    try:
+        vid = int(args.vid, 16)
+        pid = int(args.pid, 16)
+    except ValueError:
+        raise SystemExit("VID/PID invalidos. Use hex sem 0x. Ex: --vid aa88 --pid 8666")
+
+    dev = None
+
+    while True:
+        try:
+            if dev is None:
+                dev = open_device(vid, pid)
+                log(f"✅ HID conectado: {vid:04x}:{pid:04x}")
+
+            if args.mode == "cpu":
+                value = get_cpu_percent()
+            elif args.mode == "ram":
+                value = get_ram_percent()
+            else:
+                value = get_cpu_temp()
+
+            dev.write(build_payload(value))
+            time.sleep(args.interval)
+
+        except KeyboardInterrupt:
+            break
+        except Exception as e:
+            log(f"⚠ Erro: {type(e).__name__}: {e} (vou tentar novamente em 2s)")
+            try:
+                if dev is not None:
+                    dev.close()
+            except Exception:
+                pass
+            dev = None
+            time.sleep(2)
 
     try:
-        while True:
-            Event().wait(10)
-    except KeyboardInterrupt:
-        dev.close()
+        if dev is not None:
+            dev.close()
+    except Exception:
+        pass
 
 if __name__ == "__main__":
     main()
+
 PYEOF
 chmod 0755 /usr/local/bin/cpu-cooler.py
 
@@ -264,9 +279,11 @@ After=multi-user.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /usr/local/bin/cpu-cooler.py --mode ${DISPLAY_MODE}
+ExecStart=/usr/bin/python3 /usr/local/bin/cpu-cooler.py --vid $VENDOR_ID --pid $PRODUCT_ID --mode $DISPLAY_MODE
 Restart=always
 RestartSec=2
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
@@ -280,4 +297,6 @@ systemctl restart cpu-cooler.service
 
 echo ""
 echo "✅ Instalação concluída (modo sistema)."
-echo "📌 Modo configurado: ${DISPLAY_MODE}"
+echo "📌 Modo configurado: $DISPLAY_MODE"
+echo "📌 Ver logs:"
+echo "   journalctl -u cpu-cooler.service -f"
