@@ -1,162 +1,229 @@
 # CPU Cooler Display para Linux
 
-Este projeto oferece uma solução para exibir a temperatura da CPU em displays de Water Coolers no Linux, especialmente para dispositivos que possuem apenas software de controle para Windows.
+Este projeto exibe **informações do sistema** (temperatura, uso de CPU ou RAM) no display de alguns **Water Coolers** que se comunicam via **USB HID** (normalmente com software apenas para Windows).
 
-O script captura a temperatura da CPU em tempo real e a envia para o display do cooler a cada segundo. Foi testado com o Water Cooler Rise Mode Aura Ice Black, mas deve ser compatível com outros dispositivos que utilizam comunicação HID similar.
+Foi testado com o **Water Cooler Rise Mode Aura Ice Black** (ID `aa88:8666`), e pode funcionar com outros modelos que usem um protocolo HID parecido.
 
 ## ✨ Funcionalidades
 
-- **Monitoramento em Tempo Real:** Exibe a temperatura atual da CPU no display do seu Water Cooler.
-- **Fácil Instalação:** Scripts de instalação automatizada para usuário local ou para todo o sistema.
-- **Inicialização Automática:** Roda como um serviço do `systemd`, iniciando automaticamente com o sistema.
-- **Alta Compatibilidade:** Requer apenas Python e bibliotecas padrão, sem necessidade de softwares proprietários.
-- **Customizável:** Permite fácil alteração dos IDs do dispositivo e da fonte de temperatura da CPU.
+- **Monitoramento em tempo real:** envia informações para o display (a cada 1 segundo).
+- **Múltiplos modos de exibição:** temperatura da CPU, uso de CPU (%) ou uso de RAM (%).
+- **Instalação automatizada:** scripts para instalar como **serviço do usuário** ou como **serviço do sistema**.
+- **Inicialização automática:** roda via `systemd` e inicia automaticamente.
+- **Detecção assistida:** os instaladores mostram `lsusb` (filtrando “Linux Foundation”) e sugerem o VID/PID (prioriza `aa88:8666`).
 
-## 📋 Pré-requisitos
+## 📋 Pré-requisitos (Debian/Ubuntu)
 
-Antes de começar, certifique-se de que você tem o `python3` e o `pip` instalados. Você também precisará das seguintes bibliotecas Python:
-
-- `hidapi` (python-hid)
-- `psutil` (python-psutil)
-
-Você pode instalar as dependências em distribuições baseadas em Debian/Ubuntu com o seguinte comando:
+Os instaladores já conferem e instalam as dependências abaixo antes de prosseguir:
 
 ```bash
 sudo apt update
-sudo apt install python3 python3-pip libhidapi-dev
-pip3 install hidapi psutil
+sudo apt install python3-hid python3-psutil python3-pip python-is-python3
 ```
+
+> Observação: se você preferir usar `pip`, ok — mas aqui padronizamos os pacotes do sistema para evitar conflitos.
 
 ## 🚀 Instalação
 
-Recomendamos usar um dos scripts de instalação automatizada.
+### 1) Identifique o seu dispositivo (VID/PID)
 
-### 1. Encontre os IDs do seu Dispositivo
-
-Primeiro, você precisa identificar o `Vendor ID` e o `Product ID` do seu Water Cooler. Conecte o dispositivo na porta USB e execute o comando:
+Conecte o cooler na USB e execute:
 
 ```bash
 lsusb
 ```
 
-A saída será algo como:
-`Bus 001 Device 005: ID aabb:ccdd My Cooler Device`
+Exemplo (modelo testado):
 
-Neste exemplo, o `Vendor ID` é `aabb` e o `Product ID` é `ccdd`. Anote esses valores.
+```text
+Bus 001 Device 004: ID aa88:8666 铭研科技 温度显示HID设备
+```
 
-A saída para oWater Cooler Rise Mode Aura Ice Black será algo como:
-`Bus 001 Device 010: ID aa88:8666 铭研科技 温度显示HID设备`
+Neste exemplo:
+- **VENDOR_ID** = `aa88`
+- **PRODUCT_ID** = `8666`
 
-Neste exemplo, o `Vendor ID` é `aa88` e o `Product ID` é `8666`. Anote esses valores.
+### 2) Escolha o método de instalação
 
-### 2. Escolha o Método de Instalação
+#### a) Instalação para Usuário (recomendado)
 
-#### a) Instalação Automatizada para Usuário (Recomendado)
+Instala o serviço para o seu usuário (via `systemd --user`).  
+O instalador vai pedir senha de `sudo` **apenas** para criar a regra `udev` (hidraw).
 
-Este método instala o serviço para o seu usuário atual e não requer privilégios de `root` para a maior parte do processo.
+```bash
+chmod +x install-user.sh
+./install-user.sh
+```
 
-1.  Dê permissão de execução ao script:
-    ```bash
-    chmod +x install-user.sh
-    ```
-2.  Execute o script e siga as instruções:
-    ```bash
-    ./install-user.sh
-    ```
-    O script solicitará o `Vendor ID` e o `Product ID` que você anotou. Ele criará a regra `udev` necessária, copiará os arquivos e ativará o serviço `systemd` para o seu usuário.
+O instalador:
+- mostra `lsusb` (sem “Linux Foundation”)
+- sugere VID/PID (prioriza `aa88:8666`)
+- cria `/etc/udev/rules.d/99-cpu-cooler-hid.rules`
+- cria o script em `~/.local/bin/cpu_cooler.py`
+- cria o serviço em `~/.config/systemd/user/cpu-cooler.service`
+- habilita e inicia o serviço
 
-#### b) Instalação Automatizada para o Sistema (System-wide)
+**Para iniciar mesmo sem login (opcional):**
+```bash
+sudo loginctl enable-linger $USER
+```
 
-Este método instala o serviço para todos os usuários do sistema.
+#### b) Instalação para o Sistema (system-wide)
 
-1.  Dê permissão de execução ao script:
-    ```bash
-    chmod +x install-system.sh
-    ```
-2.  Execute o script com `sudo`:
-    ```bash
-    sudo ./install-system.sh
-    ```
-    O script solicitará os IDs, configurará a regra `udev`, instalará os arquivos nos diretórios do sistema (`/usr/local/bin` e `/etc/systemd/system`) e ativará o serviço globalmente.
+Instala o serviço para todos os usuários do sistema:
 
-## ⚙️ Uso e Verificação
+```bash
+chmod +x install-system.sh
+sudo ./install-system.sh
+```
 
-Após a instalação, o serviço já estará rodando. Para verificar o status:
+O instalador:
+- mostra `lsusb` (sem “Linux Foundation”)
+- sugere VID/PID (prioriza `aa88:8666`)
+- cria `/etc/udev/rules.d/99-cpu-cooler-hid.rules`
+- cria o script em `/usr/local/bin/cpu-cooler.py`
+- cria o serviço em `/etc/systemd/system/cpu-cooler.service`
+- habilita e inicia o serviço
 
--   **Para instalação de usuário:**
-    ```bash
-    systemctl --user status cpu-cooler
-    ```
--   **Para instalação de sistema:**
-    ```bash
-    systemctl status cpu-cooler.service
-    ```
+## ✅ Uso e Verificação
+
+### Instalação de usuário
+
+Status:
+```bash
+systemctl --user status cpu-cooler.service
+```
+
+Logs em tempo real:
+```bash
+journalctl --user -u cpu-cooler.service -f
+```
+
+### Instalação de sistema
+
+Status:
+```bash
+systemctl status cpu-cooler.service
+```
+
+Logs em tempo real:
+```bash
+journalctl -u cpu-cooler.service -f
+```
 
 ## 🔧 Configuração Avançada
 
-### Fonte da Temperatura da CPU
+### Modos de exibição disponíveis
 
-Por padrão, o script utiliza o sensor `k10temp`, comum em CPUs AMD. A linha relevante em `cpu_cooler.py` é:
+O script suporta diferentes **modos de exibição**, definidos por parâmetro:
 
-```python
-temp = psutil.sensors_temperatures()['k10temp'][0].current
+| Modo | Descrição |
+|-----|----------|
+| `temp` | Temperatura da CPU (padrão) |
+| `cpu`  | Uso da CPU em porcentagem |
+| `ram`  | Uso da memória RAM em porcentagem |
+
+#### Exemplo de execução manual
+
+```bash
+python3 cpu_cooler.py --mode temp
+python3 cpu_cooler.py --mode cpu
+python3 cpu_cooler.py --mode ram
 ```
 
-Se você possui uma CPU Intel ou deseja usar um sensor diferente, pode explorar os sensores disponíveis executando um script Python com `import psutil; print(psutil.sensors_temperatures())` e ajustar a linha acima conforme necessário.
+#### Exemplo configurando no systemd
 
-### Edição Manual dos IDs do Dispositivo
+Edite o serviço e altere o `ExecStart`:
 
-Se preferir, você pode editar o arquivo `cpu_cooler.py` e inserir seus `VENDOR_ID` e `PRODUCT_ID` diretamente antes de executar os scripts de instalação:
+```ini
+ExecStart=/usr/bin/python3 /usr/local/bin/cpu-cooler.py --mode cpu
+```
+
+Depois recarregue:
+
+```bash
+systemctl daemon-reload
+systemctl restart cpu-cooler.service
+```
+
+### Fonte da temperatura da CPU
+
+O script tenta usar `k10temp` (comum em AMD).  
+Se não existir, ele usa o primeiro sensor disponível.
+
+Para listar os sensores disponíveis:
+
+```bash
+python3 -c "import psutil; print(psutil.sensors_temperatures())"
+```
+
+### Protocolo do display (payload HID)
+
+O envio usa um payload HID de **64 bytes**.  
+Atualmente são utilizados:
+
+```text
+payload[0] = 0x00   # comando / report id
+payload[1] = valor  # valor a ser exibido (0..255)
+```
+
+### Exemplos de personalização
+
+#### Enviar uso de CPU (%)
 
 ```python
-VENDOR_ID = 0xSUA_ID_DE_FABRICANTE
-PRODUCT_ID = 0xSUA_ID_DE_PRODUTO
+valor = int(psutil.cpu_percent(interval=0.2))
+payload[1] = valor & 0xFF
 ```
+
+#### Enviar uso de RAM (%)
+
+```python
+valor = int(psutil.virtual_memory().percent)
+payload[1] = valor & 0xFF
+```
+
+#### Ajustar temperatura com offset
+
+```python
+temp = int(get_cpu_temp())
+temp_corrigida = temp - 3
+payload[1] = max(0, min(255, temp_corrigida))
+```
+
+> Observação: se o display aceitar mais de um byte, é possível usar `payload[2]` para valores maiores.
 
 ## 🗑️ Desinstalação
 
-Para remover o serviço e os arquivos:
-
-#### a) Desinstalação de Usuário
+### a) Remover instalação de usuário
 
 ```bash
-# Parar e desabilitar o serviço
-systemctl --user stop cpu-cooler
-systemctl --user disable cpu-cooler
-
-# Remover arquivos
-rm ~/.local/bin/cpu_cooler.py
-rm ~/.config/systemd/user/cpu-cooler.service
-
-# Recarregar o daemon do systemd
+systemctl --user stop cpu-cooler.service
+systemctl --user disable cpu-cooler.service
+rm -f ~/.local/bin/cpu_cooler.py
+rm -f ~/.config/systemd/user/cpu-cooler.service
 systemctl --user daemon-reload
-
-# Remover regra udev (requer sudo)
-sudo rm /etc/udev/rules.d/99-cpu-cooler.rules
+sudo rm -f /etc/udev/rules.d/99-cpu-cooler-hid.rules
 sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
 
-#### b) Desinstalação de Sistema
+### b) Remover instalação de sistema
 
 ```bash
-# Parar e desabilitar o serviço
 sudo systemctl stop cpu-cooler.service
 sudo systemctl disable cpu-cooler.service
-
-# Remover arquivos
-sudo rm /usr/local/bin/cpu_cooler.py
-sudo rm /etc/systemd/system/cpu-cooler.service
-
-# Recarregar o daemon do systemd
+sudo rm -f /usr/local/bin/cpu-cooler.py
+sudo rm -f /etc/systemd/system/cpu-cooler.service
 sudo systemctl daemon-reload
-
-# Remover regra udev
-sudo rm /etc/udev/rules.d/99-cpu-cooler.rules
+sudo rm -f /etc/udev/rules.d/99-cpu-cooler-hid.rules
 sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
 
 ## 🤔 Solução de Problemas
 
--   **Dispositivo não encontrado:** Verifique se os `VENDOR_ID` e `PRODUCT_ID` estão corretos. Desconecte e reconecte o dispositivo USB após a criação da regra `udev`.
--   **Erro de permissão:** Se você optou pela instalação manual e não criou a regra `udev`, o script precisará ser executado com `sudo`. A instalação automatizada cuida disso para você.
--   **Serviço não inicia:** Use o comando `journalctl --user -u cpu-cooler` (instalação de usuário) ou `journalctl -u cpu-cooler.service` (instalação de sistema) para ver os logs de erro.
+- **Dispositivo não encontrado:** confirme VID/PID com `lsusb` e reconecte o USB após criar a regra `udev`.
+- **Permissão negada:** confirme a regra `hidraw`:
+  ```bash
+  cat /etc/udev/rules.d/99-cpu-cooler-hid.rules
+  ```
+- **Serviço não inicia:** consulte os logs na seção “Uso e Verificação”.
