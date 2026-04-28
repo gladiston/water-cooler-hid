@@ -23,8 +23,8 @@ Você pode instalar as dependências em distribuições baseadas em Debian/Ubunt
 
 ```bash
 sudo apt update -y
-sudo apt install python3 python3-pip libhidapi-dev
-pip3 install hidapi psutil
+sudo apt install python3 python3-pip libhidapi-dev -y
+pip3 install hidapi psutil -y
 ```
 
 ## Encontre os IDs do seu Dispositivo
